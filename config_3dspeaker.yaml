@@ -1,0 +1,156 @@
+# 3D-Speaker + SenseVoice 集成系统配置文件
+
+# 说话人识别配置
+speaker_verification:
+  # 是否启用说话人识别功能
+  enabled: false
+  
+  # 声纹数据库目录
+  voiceprint_dir: "./voiceprint_db"
+  
+  # 预训练模型目录
+  model_dir: "./pretrained_models"
+  
+  # 模型类型: campplus, eres2net, eres2netv2
+  model_type: "eres2net"
+  
+  # 相似度阈值 (0-1之间，越高要求越严格)
+  threshold: 0.7
+  
+  # 支持的模型配置
+  models:
+    campplus:
+      model_id: "iic/speech_campplus_sv_zh-cn_16k-common"
+      revision: "v1.0.0"
+      embedding_size: 192
+      description: "CAM++模型，在20万说话人上训练，适合中文场景"
+      
+    eres2net:
+      model_id: "iic/speech_eres2net_sv_zh-cn_16k-common"
+      revision: "v1.0.5"
+      embedding_size: 192
+      description: "ERes2Net模型，在20万说话人上训练，适合中文场景"
+      
+    eres2netv2:
+      model_id: "iic/speech_eres2netv2_sv_zh-cn_16k-common"
+      revision: "v1.0.1"
+      embedding_size: 192
+      description: "ERes2NetV2模型，最新版本，性能更好"
+
+# SenseVoice语音识别配置
+sensevoice:
+  # 模型名称或路径
+  model: "iic/SenseVoiceSmall"
+  
+  # VAD模型
+  vad_model: "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
+  
+  # VAD参数
+  vad_kwargs:
+    max_single_segment_time: 30000  # 最大单段时长(毫秒)
+  
+  # 是否使用逆文本正则化(添加标点等)
+  use_itn: true
+  
+  # 批处理大小(秒)
+  batch_size_s: 60
+  
+  # 是否合并VAD片段
+  merge_vad: true
+  
+  # 合并长度(秒)
+  merge_length_s: 15
+  
+  # 支持的语言
+  languages:
+    - auto    # 自动检测
+    - zh      # 中文
+    - en      # 英文
+    - yue     # 粤语
+    - ja      # 日语
+    - ko      # 韩语
+    - nospeech  # 无语音
+  
+  # 默认语言
+  default_language: "auto"
+
+# 系统配置
+system:
+  # 计算设备: cuda:0, cuda:1, cpu
+  device: "cpu"  # 改为CPU模式（如果有GPU且安装了CUDA版PyTorch，可改为cuda:0）
+  
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+  
+  # 结果输出格式: json, txt
+  output_format: "json"
+  
+  # 是否保存中间结果
+  save_intermediate: false
+
+# WebUI配置
+webui:
+  # 服务器端口
+  port: 7860
+  
+  # 服务器地址
+  server_name: "0.0.0.0"
+  
+  # 是否分享公开链接
+  share: false
+  
+  # 主题: default, huggingface, grass, peach, soft
+  theme: "soft"
+  
+  # 最大并发数
+  max_concurrent: 5
+  
+  # 是否启用说话人识别标签页
+  enable_speaker_tab: true
+  
+  # 音频示例文件
+  audio_examples:
+    - "example/zh.mp3"
+    - "example/en.mp3"
+    - "example/yue.mp3"
+
+# 批处理配置
+batch_processing:
+  # 批处理线程数
+  num_workers: 4
+  
+  # 是否显示进度条
+  show_progress: true
+  
+  # 结果保存目录
+  output_dir: "./results"
+  
+  # 是否保存音频元信息
+  save_metadata: true
+
+# 高级配置
+advanced:
+  # 是否禁用未知情感标签
+  ban_emo_unk: false
+  
+  # 是否输出时间戳
+  output_timestamp: false
+  
+  # 音频采样率
+  sample_rate: 16000
+  
+  # 特征提取参数
+  feature_extraction:
+    n_mels: 80
+    win_length: 400
+    hop_length: 160
+    
+  # 模型缓存目录
+  model_cache_dir: "~/.cache/modelscope"
+  
+  # 是否使用GPU加速
+  use_gpu: true
+  
+  # GPU内存限制(MB) - 0表示不限制
+  gpu_memory_limit: 0
+

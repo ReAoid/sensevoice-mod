@@ -1,0 +1,20 @@
+{
+  "黑天鹅": {
+    "speaker_id": "黑天鹅",
+    "speaker_name": "黑天鹅",
+    "audio_path": "/private/var/folders/sr/2yh_gss544l9lvjyy6tywcsr0000gr/T/gradio/2d2029e666b847285b86b759364af80a45782596f51b3abdfa16e6f0f4a401b1/默认很害怕的表情呢放心既然此事与你无关我不会为难你的就当陪我走走吧.wav",
+    "embedding_file": "voiceprint_db/embeddings/黑天鹅.npy",
+    "register_time": "2025-10-30T16:19:41.342134",
+    "model_type": "eres2net",
+    "metadata": {}
+  },
+  "三月七": {
+    "speaker_id": "三月七",
+    "speaker_name": "三月七",
+    "audio_path": "/private/var/folders/sr/2yh_gss544l9lvjyy6tywcsr0000gr/T/gradio/05dab45cad4a802aebd77ff91d3f74cba901ffc2ba05babbffa1db9fd4d11000/默认那就是裂界侵蚀的痕迹越弱附近的情况就会越安全.wav",
+    "embedding_file": "voiceprint_db/embeddings/三月七.npy",
+    "register_time": "2025-10-30T16:34:05.109599",
+    "model_type": "eres2net",
+    "metadata": {}
+  }
+}
