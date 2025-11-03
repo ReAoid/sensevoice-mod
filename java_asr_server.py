@@ -391,8 +391,15 @@ class JavaASRServer:
             client_info["last_activity"] = time.time()
             client_info["total_chunks"] += 1
             
+            # 记录接收到的音频数据信息
+            audio_size_kb = len(audio_bytes) / 1024
+            total_chunks = client_info["total_chunks"]
+            logger.info(f"📥 [客户端:{client_id}] 接收音频块 #{total_chunks} | 大小: {audio_size_kb:.2f} KB ({len(audio_bytes)} 字节)")
+            
             # 添加到缓冲区
             self.audio_buffers[client_id].append(audio_bytes)
+            total_buffer_size = sum(len(chunk) for chunk in self.audio_buffers[client_id])
+            logger.debug(f"   缓冲区总大小: {total_buffer_size / 1024:.2f} KB ({len(self.audio_buffers[client_id])} 个音频块)")
             
             # VAD检测和ASR处理
             await self.process_vad_and_asr(websocket, audio_bytes)
@@ -462,6 +469,7 @@ class JavaASRServer:
         try:
             # 检查音频数据长度
             if len(audio_bytes) == 0:
+                logger.debug("⚠️  VAD检测: 音频数据为空")
                 return False
             
             # 确保音频数据长度是2的倍数（16位音频）
@@ -472,6 +480,7 @@ class JavaASRServer:
             audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
             
             if len(audio_data) == 0:
+                logger.debug("⚠️  VAD检测: 转换后音频数据为空")
                 return False
             
             # 简单的能量检测作为VAD
@@ -480,7 +489,12 @@ class JavaASRServer:
             # 动态阈值调整
             threshold = 1000000  # 可以根据实际情况调整
             
-            return energy > threshold
+            has_speech = energy > threshold
+            
+            # 记录VAD检测结果
+            logger.debug(f"🔍 VAD检测: 能量={energy:.0f}, 阈值={threshold}, 有语音={has_speech}")
+            
+            return has_speech
             
         except Exception as e:
             logger.error(f"语音检测失败: {e}")
@@ -493,17 +507,24 @@ class JavaASRServer:
         vad_state = self.vad_states[client_id]
         
         if not vad_state["accumulated_audio"]:
+            logger.debug(f"⏭️  [客户端:{client_id}] 没有累积的音频数据，跳过ASR处理")
             return
         
         try:
             # 合并音频数据
             combined_audio = b''.join(vad_state["accumulated_audio"])
+            audio_duration = len(combined_audio) / (self.sample_rate * 2)  # 2字节/样本
+            
+            logger.info(f"🔄 [客户端:{client_id}] 准备ASR识别 | 累积音频: {len(combined_audio)} 字节, 约 {audio_duration:.2f} 秒")
             
             # 清空累积缓冲区
             vad_state["accumulated_audio"] = []
             
             # 如果音频数据足够长，进行ASR识别
-            if len(combined_audio) > self.sample_rate * 0.5:  # 至少0.5秒的音频
+            min_duration = 0.5
+            if len(combined_audio) > self.sample_rate * min_duration:  # 至少0.5秒的音频
+                logger.info(f"🎯 [客户端:{client_id}] 开始执行ASR识别...")
+                
                 # 在线程池中执行ASR
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
@@ -515,10 +536,15 @@ class JavaASRServer:
                 
                 # 如果有识别结果，发送给Java客户端
                 if result and result.get("transcription") and result["transcription"].strip():
+                    logger.info(f"✅ [客户端:{client_id}] ASR识别成功: '{result['transcription']}'")
                     await self.send_partial_result(websocket, result)
+                else:
+                    logger.debug(f"🔇 [客户端:{client_id}] ASR识别无结果或为空")
+            else:
+                logger.debug(f"⏭️  [客户端:{client_id}] 音频时长不足 ({audio_duration:.2f}秒 < {min_duration}秒)，跳过识别")
         
         except Exception as e:
-            logger.error(f"ASR处理失败: {e}")
+            logger.error(f"❌ [客户端:{client_id}] ASR处理失败: {e}")
     
     async def handle_input_complete(self, websocket):
         """处理输入完成 - 关键函数，通知Java端语音输入结束"""
@@ -840,7 +866,8 @@ class JavaASRServer:
             "endpoints": {
                 "websocket": f"ws://{self.host}:{self.websocket_port}/asr",
                 "health": f"http://{self.host}:{self.http_port}/health",
-                "info": f"http://{self.host}:{self.http_port}/info"
+                "info": f"http://{self.host}:{self.http_port}/info",
+                "stats": f"http://{self.host}:{self.http_port}/stats"
             },
             "integration_guide": {
                 "java_websocket_url": f"ws://{self.host}:{self.websocket_port}/asr",
@@ -855,6 +882,54 @@ class JavaASRServer:
             }
         }
         return web.json_response(info)
+    
+    async def get_stats(self, request):
+        """获取实时统计信息 - 用于监控音频接收情况"""
+        stats = {
+            "server_status": "running",
+            "uptime_seconds": int(time.time() - self._start_time),
+            "active_clients": len(self.clients),
+            "clients_detail": []
+        }
+        
+        # 收集每个客户端的详细信息
+        for websocket, client_info in self.clients.items():
+            client_id = client_info["id"]
+            
+            # 获取缓冲区信息
+            buffer_size = sum(len(chunk) for chunk in self.audio_buffers.get(client_id, []))
+            buffer_chunks = len(self.audio_buffers.get(client_id, []))
+            
+            # 获取VAD状态
+            vad_state = self.vad_states.get(client_id, {})
+            accumulated_chunks = len(vad_state.get("accumulated_audio", []))
+            accumulated_size = sum(len(chunk) for chunk in vad_state.get("accumulated_audio", []))
+            
+            client_stats = {
+                "client_id": client_id,
+                "session_active": client_info.get("session_active", False),
+                "language": client_info.get("language", "auto"),
+                "total_chunks_received": client_info.get("total_chunks", 0),
+                "connected_seconds": int(time.time() - client_info["connected_at"].timestamp()),
+                "last_activity_seconds_ago": int(time.time() - client_info.get("last_activity", time.time())),
+                "buffer": {
+                    "chunks": buffer_chunks,
+                    "size_bytes": buffer_size,
+                    "size_kb": round(buffer_size / 1024, 2)
+                },
+                "vad_state": {
+                    "is_speaking": vad_state.get("is_speaking", False),
+                    "speech_detected": vad_state.get("speech_detected", False),
+                    "accumulated_chunks": accumulated_chunks,
+                    "accumulated_size_bytes": accumulated_size,
+                    "accumulated_size_kb": round(accumulated_size / 1024, 2),
+                    "accumulated_duration_seconds": round(accumulated_size / (self.sample_rate * 2), 2)
+                }
+            }
+            
+            stats["clients_detail"].append(client_stats)
+        
+        return web.json_response(stats)
     
     # ==================== 服务器启动 ====================
     
@@ -875,6 +950,7 @@ class JavaASRServer:
         # 添加路由
         app.router.add_get('/health', self.health_check)
         app.router.add_get('/info', self.server_info)
+        app.router.add_get('/stats', self.get_stats)
         
         # 添加CORS
         for route in list(app.router.routes()):
