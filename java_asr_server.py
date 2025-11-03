@@ -50,6 +50,15 @@ except ImportError as e:
     print("请运行: pip install funasr>=1.1.3 websockets aiohttp librosa soundfile numpy")
     exit(1)
 
+# 尝试导入音频预处理模块
+try:
+    from audio_preprocessing import AudioPreprocessor, RealTimeAudioBuffer
+    AUDIO_PREPROCESSING_AVAILABLE = True
+except ImportError:
+    AUDIO_PREPROCESSING_AVAILABLE = False
+    print("⚠️  音频预处理模块未安装，降噪功能将不可用")
+    print("安装命令: pip install noisereduce scipy")
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -68,7 +77,8 @@ class JavaASRServer:
                  host: str = "localhost",
                  sample_rate: int = 16000,
                  silence_duration: float = 2.0,
-                 vad_threshold: float = 0.5):
+                 vad_threshold: float = 0.5,
+                 enable_noise_reduction: bool = False):
         """
         初始化Java集成专用ASR服务器
         
@@ -81,6 +91,7 @@ class JavaASRServer:
             sample_rate: 音频采样率
             silence_duration: 静音持续时间判断输入结束(秒)
             vad_threshold: VAD阈值
+            enable_noise_reduction: 启用降噪功能（适用于嘈杂环境）
         """
         self.model_dir = model_dir
         self.device = self._get_device(device)
@@ -90,6 +101,7 @@ class JavaASRServer:
         self.sample_rate = sample_rate
         self.silence_duration = silence_duration
         self.vad_threshold = vad_threshold
+        self.enable_noise_reduction = enable_noise_reduction and AUDIO_PREPROCESSING_AVAILABLE
         
         # 模型相关
         self.model = None
@@ -98,6 +110,15 @@ class JavaASRServer:
         self.clients = {}  # websocket -> client_info
         self.audio_buffers = {}  # client_id -> audio_buffer
         self.vad_states = {}  # client_id -> vad_state
+        
+        # 音频预处理器（每个客户端一个）
+        self.audio_preprocessors = {}  # client_id -> AudioPreprocessor
+        
+        # 降噪功能状态
+        if self.enable_noise_reduction:
+            logger.info("✅ 降噪功能已启用（适用于嘈杂环境）")
+        else:
+            logger.info("ℹ️  降噪功能未启用（安静环境）")
         
         # 线程池
         self.executor = ThreadPoolExecutor(max_workers=4)
@@ -192,6 +213,15 @@ class JavaASRServer:
             "accumulated_audio": [],
             "speech_detected": False
         }
+        
+        # 初始化音频预处理器
+        if self.enable_noise_reduction:
+            self.audio_preprocessors[client_id] = AudioPreprocessor(
+                sample_rate=self.sample_rate,
+                enable_noise_reduction=True,
+                enable_voice_enhancement=True,
+                enable_high_pass_filter=True
+            )
         
         try:
             # 发送欢迎消息
@@ -392,6 +422,20 @@ class JavaASRServer:
             audio_size_kb = len(audio_bytes) / 1024
             total_chunks = client_info["total_chunks"]
             logger.info(f"📥 [客户端:{client_id}] 接收音频块 #{total_chunks} | 大小: {audio_size_kb:.2f} KB ({len(audio_bytes)} 字节)")
+            
+            # 🎯 音频预处理（降噪）
+            if self.enable_noise_reduction and client_id in self.audio_preprocessors:
+                try:
+                    # 转换为numpy数组
+                    audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                    # 预处理
+                    preprocessor = self.audio_preprocessors[client_id]
+                    processed_array = preprocessor.preprocess(audio_array)
+                    # 转换回字节
+                    audio_bytes = processed_array.tobytes()
+                    logger.debug(f"   🎧 音频已预处理（降噪）")
+                except Exception as e:
+                    logger.warning(f"音频预处理失败，使用原始音频: {e}")
             
             # 添加到缓冲区
             self.audio_buffers[client_id].append(audio_bytes)
@@ -699,6 +743,8 @@ class JavaASRServer:
             del self.audio_buffers[client_id]
         if client_id in self.vad_states:
             del self.vad_states[client_id]
+        if client_id in self.audio_preprocessors:
+            del self.audio_preprocessors[client_id]
     
     # ==================== HTTP健康检查 ====================
     
@@ -947,6 +993,7 @@ async def main():
     parser.add_argument("--model-dir", default="iic/SenseVoiceSmall", help="模型目录")
     parser.add_argument("--sample-rate", type=int, default=16000, help="音频采样率")
     parser.add_argument("--silence-duration", type=float, default=2.0, help="静音持续时间(秒)")
+    parser.add_argument("--enable-noise-reduction", action="store_true", help="启用降噪功能（适用于嘈杂环境）")
     
     args = parser.parse_args()
     
@@ -958,7 +1005,8 @@ async def main():
         http_port=args.http_port,
         host=args.host,
         sample_rate=args.sample_rate,
-        silence_duration=args.silence_duration
+        silence_duration=args.silence_duration,
+        enable_noise_reduction=args.enable_noise_reduction
     )
     
     # 设置信号处理
