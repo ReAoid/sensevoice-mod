@@ -314,11 +314,9 @@ class JavaASRServer:
         
         response = {
             "type": "session_started",
-            "client_id": client_id,
             "session_id": client_info["session_id"],
-            "language": client_info["language"],
-            "message": "ASR会话已开始，请开始说话",
-            "timestamp": datetime.now().isoformat()
+            "message": "ASR会话已开始",
+            "timestamp": int(time.time() * 1000)
         }
         await websocket.send(json.dumps(response, ensure_ascii=False))
     
@@ -336,10 +334,9 @@ class JavaASRServer:
             
             response = {
                 "type": "session_ended",
-                "client_id": client_id,
-                "total_chunks": client_info.get("total_chunks", 0),
+                "session_id": client_info.get("session_id"),
                 "message": "ASR会话已结束",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": int(time.time() * 1000)
             }
             await websocket.send(json.dumps(response, ensure_ascii=False))
     
@@ -437,9 +434,6 @@ class JavaASRServer:
                     vad_state["silence_start"] = None
                     
                     logger.info(f"🎤 检测到语音开始: {client_id}")
-                    
-                    # 通知Java端开始说话
-                    await self.send_speech_status(websocket, "speech_started")
                 
                 # 重置静音开始时间
                 vad_state["silence_start"] = None
@@ -456,10 +450,6 @@ class JavaASRServer:
                     if silence_duration >= self.silence_duration:
                         # 静音时间足够长，认为输入结束
                         await self.handle_input_complete(websocket)
-            
-            # 定期处理累积的音频（每秒处理一次）
-            if len(vad_state["accumulated_audio"]) >= 10:  # 假设每100ms一个音频块
-                await self.process_accumulated_audio_for_asr(websocket)
                 
         except Exception as e:
             logger.error(f"VAD处理失败: {e}")
@@ -500,54 +490,8 @@ class JavaASRServer:
             logger.error(f"语音检测失败: {e}")
             return False
     
-    async def process_accumulated_audio_for_asr(self, websocket):
-        """处理累积的音频进行ASR识别"""
-        client_info = self.clients[websocket]
-        client_id = client_info["id"]
-        vad_state = self.vad_states[client_id]
-        
-        if not vad_state["accumulated_audio"]:
-            logger.debug(f"⏭️  [客户端:{client_id}] 没有累积的音频数据，跳过ASR处理")
-            return
-        
-        try:
-            # 合并音频数据
-            combined_audio = b''.join(vad_state["accumulated_audio"])
-            audio_duration = len(combined_audio) / (self.sample_rate * 2)  # 2字节/样本
-            
-            logger.info(f"🔄 [客户端:{client_id}] 准备ASR识别 | 累积音频: {len(combined_audio)} 字节, 约 {audio_duration:.2f} 秒")
-            
-            # 清空累积缓冲区
-            vad_state["accumulated_audio"] = []
-            
-            # 如果音频数据足够长，进行ASR识别
-            min_duration = 0.5
-            if len(combined_audio) > self.sample_rate * min_duration:  # 至少0.5秒的音频
-                logger.info(f"🎯 [客户端:{client_id}] 开始执行ASR识别...")
-                
-                # 在线程池中执行ASR
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    self.executor,
-                    self._recognize_audio_sync,
-                    combined_audio,
-                    client_info.get("language", "auto")
-                )
-                
-                # 如果有识别结果，发送给Java客户端
-                if result and result.get("transcription") and result["transcription"].strip():
-                    logger.info(f"✅ [客户端:{client_id}] ASR识别成功: '{result['transcription']}'")
-                    await self.send_partial_result(websocket, result)
-                else:
-                    logger.debug(f"🔇 [客户端:{client_id}] ASR识别无结果或为空")
-            else:
-                logger.debug(f"⏭️  [客户端:{client_id}] 音频时长不足 ({audio_duration:.2f}秒 < {min_duration}秒)，跳过识别")
-        
-        except Exception as e:
-            logger.error(f"❌ [客户端:{client_id}] ASR处理失败: {e}")
-    
     async def handle_input_complete(self, websocket):
-        """处理输入完成 - 关键函数，通知Java端语音输入结束"""
+        """处理输入完成 - 关键函数，执行最终ASR识别并发送结果给Java端"""
         client_info = self.clients[websocket]
         client_id = client_info["id"]
         vad_state = self.vad_states[client_id]
@@ -558,12 +502,9 @@ class JavaASRServer:
         vad_state["is_speaking"] = False
         vad_state["last_speech_end"] = time.time()
         
-        # 处理剩余的音频数据
+        # 处理剩余的音频数据并发送最终识别结果
         if vad_state["accumulated_audio"]:
             await self.process_final_accumulated_audio(websocket)
-        
-        # 通知Java客户端输入结束 - 这是关键消息，Java端需要接收此消息来触发AI对话
-        await self.send_speech_status(websocket, "input_complete")
     
     async def process_final_accumulated_audio(self, websocket):
         """处理最终的累积音频"""
@@ -687,56 +628,26 @@ class JavaASRServer:
         
         return result
     
-    async def send_partial_result(self, websocket, result: Dict[str, Any]):
-        """发送部分识别结果"""
-        client_info = self.clients[websocket]
-        
-        response = {
-            "type": "partial_result",
-            "client_id": client_info["id"],
-            "session_id": client_info.get("session_id"),
-            "result": result,
-            "is_final": False,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        await websocket.send(json.dumps(response, ensure_ascii=False))
-        logger.info(f"📝 部分识别结果 [{client_info['id']}]: {result['transcription']}")
     
     async def send_final_result(self, websocket, result: Dict[str, Any]):
         """发送最终识别结果 - Java端接收的完整语音识别结果"""
         client_info = self.clients[websocket]
         
+        # Java端期望的格式
         response = {
-            "type": "final_result",
-            "client_id": client_info["id"],
+            "type": "recognition_result",
             "session_id": client_info.get("session_id"),
-            "result": result,
-            "is_final": True,
-            "speech_complete": True,  # 标记语音输入完成
-            "timestamp": datetime.now().isoformat()
+            "result": {
+                "transcription": result.get("transcription", ""),
+                "confidence": result.get("confidence", 0.8),
+                "is_final": True
+            },
+            "timestamp": int(time.time() * 1000)  # Unix时间戳（毫秒）
         }
         
         await websocket.send(json.dumps(response, ensure_ascii=False))
-        logger.info(f"🎯 最终识别结果发送给Java端 [{client_info['id']}]: {result['transcription']}")
+        logger.info(f"🎯 最终识别结果发送给Java端 [session:{client_info.get('session_id')}]: {result['transcription']}")
     
-    async def send_speech_status(self, websocket, status: str):
-        """发送语音状态"""
-        client_info = self.clients[websocket]
-        
-        response = {
-            "type": "speech_status",
-            "client_id": client_info["id"],
-            "session_id": client_info.get("session_id"),
-            "status": status,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        await websocket.send(json.dumps(response, ensure_ascii=False))
-        
-        # 特殊处理输入完成状态
-        if status == "input_complete":
-            logger.info(f"🚨 通知Java端语音输入完成: {client_info['id']}")
     
     async def process_final_audio(self, websocket):
         """处理会话结束时的剩余音频"""
@@ -776,7 +687,7 @@ class JavaASRServer:
         error_msg = {
             "type": "error",
             "message": message,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": int(time.time() * 1000)
         }
         await websocket.send(json.dumps(error_msg, ensure_ascii=False))
     
